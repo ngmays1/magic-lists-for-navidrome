@@ -1555,7 +1555,8 @@ function renderArtistSpotlight(artists) {
             <div class="flex-none">
                 <button
                     id="shuffle-btn-${artist.id}"
-                    onclick="createArtistShufflePlaylist('${artist.id}', ${JSON.stringify(artist.name)})"
+                    data-artist-id="${artist.id}"
+                    data-artist-name="${artist.name.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"
                     class="text-sm font-medium bg-gray-900 text-white py-1.5 px-3 rounded-lg hover:bg-gray-700 transition-colors whitespace-nowrap"
                 >
                     Weekly Shuffle
@@ -1563,6 +1564,12 @@ function renderArtistSpotlight(artists) {
             </div>
         </div>
     `).join('');
+
+    container.querySelectorAll('[data-artist-id]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            createArtistShufflePlaylist(btn.dataset.artistId, btn.dataset.artistName);
+        });
+    });
 }
 
 async function createArtistShufflePlaylist(artistId, artistName) {
@@ -1580,6 +1587,7 @@ async function createArtistShufflePlaylist(artistId, artistName) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 artist_ids: [artistId],
+                playlist_name: `Artist Shuffle: ${artistName}`,
                 refresh_frequency: 'weekly',
                 playlist_length: 25,
                 library_ids: selectedLibraryIds
@@ -1591,12 +1599,20 @@ async function createArtistShufflePlaylist(artistId, artistName) {
             throw new Error(err.detail || 'Failed to create playlist');
         }
 
-        showToast('success', `Weekly shuffle created for ${artistName} — refreshes every Monday!`);
+        if (btn) {
+            btn.textContent = '✓ Created';
+            btn.className = 'text-sm font-medium bg-green-600 text-white py-1.5 px-3 rounded-lg whitespace-nowrap cursor-default';
+        }
+
+        showToast('success', `Weekly shuffle created for ${artistName}! Find it in the Playlists tab.`);
         updatePlaylistCount();
+
+        if (document.getElementById('manage-playlists-content').style.display !== 'none') {
+            loadPlaylists();
+        }
 
     } catch (error) {
         showToast('error', error.message);
-    } finally {
         if (btn) {
             btn.disabled = false;
             btn.textContent = 'Weekly Shuffle';

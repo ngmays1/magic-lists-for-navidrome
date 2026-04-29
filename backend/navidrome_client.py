@@ -1159,10 +1159,10 @@ class NavidromeClient:
             return 0
 
     async def get_artists_with_song_counts(self, library_ids: Union[List[str], str, None] = None) -> List[Dict[str, Any]]:
-        """Fetch all artists with accurate song counts, filtered to those with 100+ songs.
+        """Fetch all artists with accurate song counts, filtered to those with 75+ songs.
 
         Calls getArtists.view to list all artists, then batches getArtist.view calls
-        to sum per-album songCounts. Only returns artists with >= 100 songs.
+        to sum per-album songCounts. Only returns artists with >= 75 songs.
 
         Returns:
             List of artists: {id, name, song_count, album_count}
@@ -1200,20 +1200,17 @@ class NavidromeClient:
                 seen.add(a["id"])
                 unique_artists.append(a)
 
-        # Pre-filter: only artists with at least 7 albums are likely to have 100+ songs.
-        # We still verify with exact counts afterward.
-        candidates = [a for a in unique_artists if a["album_count"] >= 7]
-        print(f"🎵 Artist Spotlight: {len(unique_artists)} total artists, {len(candidates)} candidates (7+ albums)")
+        print(f"🎵 Artist Spotlight: {len(unique_artists)} total artists, fetching song counts for all")
 
-        # Fetch song counts in parallel batches of 20
+        # Fetch song counts for all artists in parallel batches of 20
         BATCH = 20
         results = []
-        for i in range(0, len(candidates), BATCH):
-            batch = candidates[i:i + BATCH]
+        for i in range(0, len(unique_artists), BATCH):
+            batch = unique_artists[i:i + BATCH]
             import asyncio
             counts = await asyncio.gather(*[self.get_artist_song_count(a["id"]) for a in batch])
             for artist, count in zip(batch, counts):
-                if count >= 100:
+                if count >= 75:
                     results.append({
                         "id": artist["id"],
                         "name": artist["name"],
@@ -1222,7 +1219,7 @@ class NavidromeClient:
                     })
 
         results.sort(key=lambda x: x["name"].lower())
-        print(f"✅ Artist Spotlight: {len(results)} artists with 100+ songs")
+        print(f"✅ Artist Spotlight: {len(results)} artists with 75+ songs")
         return results
 
     async def _get_artists_with_album_count(self, library_id: Union[str, None]) -> List[Dict[str, Any]]:

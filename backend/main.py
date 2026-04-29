@@ -1395,12 +1395,16 @@ async def create_artist_shuffle_playlist(
         nav_client = get_navidrome_client()
         artist_id = request.artist_ids[0]
 
-        all_artists = await nav_client.get_artists(request.library_ids)
-        artist = next((a for a in all_artists if a["id"] == artist_id), None)
-        if not artist:
-            raise HTTPException(status_code=404, detail="Artist not found")
+        # Use provided playlist_name directly; only fetch artists if we need to derive the name
+        if request.playlist_name:
+            playlist_name = request.playlist_name
+        else:
+            all_artists = await nav_client.get_artists(request.library_ids)
+            artist = next((a for a in all_artists if a["id"] == artist_id), None)
+            if not artist:
+                raise HTTPException(status_code=404, detail="Artist not found")
+            playlist_name = f"Artist Shuffle: {artist['name']}"
 
-        artist_name = artist["name"]
         tracks = await nav_client.get_tracks_by_artist(artist_id, request.library_ids)
         if not tracks:
             raise HTTPException(status_code=404, detail="No tracks found for this artist")
@@ -1408,8 +1412,6 @@ async def create_artist_shuffle_playlist(
         selected = random.sample(tracks, min(request.playlist_length, len(tracks)))
         track_ids = [t["id"] for t in selected]
         track_titles = [t["title"] for t in selected]
-
-        playlist_name = request.playlist_name or f"Artist Shuffle: {artist_name}"
 
         navidrome_playlist_id = await nav_client.create_playlist(
             name=playlist_name,
