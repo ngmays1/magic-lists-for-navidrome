@@ -1019,6 +1019,8 @@ async def refresh_scheduled_playlists():
                 await refresh_rediscover_playlist(scheduled_playlist, db)
             elif scheduled_playlist.playlist_type == "this_is":
                 await refresh_this_is_playlist(scheduled_playlist, db)
+            elif scheduled_playlist.playlist_type == "artist_shuffle":
+                await refresh_artist_shuffle_playlist(scheduled_playlist, db)
                 
     except Exception as e:
         scheduler_logger.error(f"❌ Error checking scheduled playlists: {e}")
@@ -1252,6 +1254,52 @@ async def refresh_this_is_playlist(scheduled_playlist, db: DatabaseManager):
     except Exception as e:
         scheduler_logger.error(f"❌ Error refreshing This Is playlist {scheduled_playlist.navidrome_playlist_id}: {e}")
 
+async def refresh_artist_shuffle_playlist(scheduled_playlist, db: DatabaseManager):
+    """Refresh an Artist Shuffle playlist with a fresh random selection"""
+    import random
+    try:
+        scheduler_logger.info(f"🔀 Starting Artist Shuffle refresh for {scheduled_playlist.navidrome_playlist_id}")
+
+        nav_client = get_navidrome_client()
+
+        playlists = await db.get_all_playlists_with_schedule_info()
+        original = next((p for p in playlists if p.get("navidrome_playlist_id") == scheduled_playlist.navidrome_playlist_id), None)
+        if not original:
+            scheduler_logger.error(f"❌ Could not find original playlist for {scheduled_playlist.navidrome_playlist_id}")
+            return
+
+        artist_id = original["artist_id"]
+        original_length = original.get("playlist_length", 25)
+
+        tracks = await nav_client.get_tracks_by_artist(artist_id)
+        if not tracks:
+            scheduler_logger.warning(f"⚠️ No tracks found for artist {artist_id}")
+            return
+
+        selected = random.sample(tracks, min(original_length, len(tracks)))
+        track_ids = [t["id"] for t in selected]
+        track_titles = [t["title"] for t in selected]
+
+        await nav_client.update_playlist(
+            playlist_id=scheduled_playlist.navidrome_playlist_id,
+            track_ids=track_ids,
+        )
+
+        await db.update_playlist_content(
+            navidrome_playlist_id=scheduled_playlist.navidrome_playlist_id,
+            songs=track_titles,
+            reasoning=None,
+        )
+
+        next_refresh = calculate_next_refresh(scheduled_playlist.refresh_frequency)
+        await db.update_scheduled_playlist_next_refresh(scheduled_playlist.id, next_refresh)
+
+        scheduler_logger.info(f"✅ Artist Shuffle refreshed: {len(selected)} tracks. Next: {next_refresh.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    except Exception as e:
+        scheduler_logger.error(f"❌ Error refreshing Artist Shuffle playlist {scheduled_playlist.navidrome_playlist_id}: {e}")
+
+
 @app.get("/api/playlists")
 async def get_all_playlists(db: DatabaseManager = Depends(get_db)):
     """Get all playlists with scheduling information"""
@@ -1306,6 +1354,91 @@ async def delete_playlist(playlist_id: int, db: DatabaseManager = Depends(get_db
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete playlist: {str(e)}")
+
+@app.get("/api/artist-spotlight")
+async def get_artist_spotlight(library_id: List[str] = Query(None)):
+    """Get all artists with 100+ songs for the Artist Spotlight page"""
+    try:
+        client = get_navidrome_client()
+        artists = await client.get_artists_with_song_counts(library_id)
+        return artists
+    except Exception as e:
+        error_msg = str(e)
+        if "Invalid username or password" in error_msg or "No authentication method available" in error_msg:
+            raise HTTPException(status_code=401, detail=error_msg)
+        elif "Network error" in error_msg or "connecting to Navidrome" in error_msg:
+            raise HTTPException(status_code=503, detail=f"Cannot connect to Navidrome server: {error_msg}")
+        else:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch artist spotlight: {error_msg}")
+
+
+@app.post("/api/create-artist-shuffle-playlist")
+async def create_artist_shuffle_playlist(
+    request: CreatePlaylistRequest,
+    db: DatabaseManager = Depends(get_db)
+):
+    """Create a random 25-song shuffle playlist for an artist, refreshed weekly"""
+    import random
+
+    if not request.artist_ids:
+        raise HTTPException(status_code=400, detail="At least one artist must be selected")
+
+    try:
+        nav_client = get_navidrome_client()
+        artist_id = request.artist_ids[0]
+
+        all_artists = await nav_client.get_artists(request.library_ids)
+        artist = next((a for a in all_artists if a["id"] == artist_id), None)
+        if not artist:
+            raise HTTPException(status_code=404, detail="Artist not found")
+
+        artist_name = artist["name"]
+        tracks = await nav_client.get_tracks_by_artist(artist_id, request.library_ids)
+        if not tracks:
+            raise HTTPException(status_code=404, detail="No tracks found for this artist")
+
+        selected = random.sample(tracks, min(request.playlist_length, len(tracks)))
+        track_ids = [t["id"] for t in selected]
+        track_titles = [t["title"] for t in selected]
+
+        playlist_name = request.playlist_name or f"Artist Shuffle: {artist_name}"
+
+        navidrome_playlist_id = await nav_client.create_playlist(
+            name=playlist_name,
+            track_ids=track_ids,
+        )
+
+        playlist = await db.create_playlist(
+            artist_id=artist_id,
+            playlist_name=playlist_name,
+            songs=track_titles,
+            reasoning=None,
+            navidrome_playlist_id=navidrome_playlist_id,
+            playlist_length=request.playlist_length,
+            library_ids=request.library_ids,
+        )
+
+        refresh_frequency = request.refresh_frequency if request.refresh_frequency not in ["none", "never"] else "weekly"
+        next_refresh = calculate_next_refresh(refresh_frequency)
+        await db.create_scheduled_playlist(
+            playlist_type="artist_shuffle",
+            navidrome_playlist_id=navidrome_playlist_id,
+            refresh_frequency=refresh_frequency,
+            next_refresh=next_refresh,
+        )
+        schedule_playlist_refresh()
+
+        playlist_dict = playlist.dict() if hasattr(playlist, "dict") else playlist.__dict__
+        playlist_dict["navidrome_playlist_id"] = navidrome_playlist_id
+        playlist_dict["refresh_frequency"] = refresh_frequency
+        playlist_dict["next_refresh"] = next_refresh.isoformat()
+        return playlist_dict
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create artist shuffle playlist: {str(e)}")
+
 
 @app.get("/api/recipes")
 async def get_available_recipes():
@@ -1444,7 +1577,7 @@ async def track_library_size(db: DatabaseManager = Depends(get_db)):
 async def spa_router(request: Request, path: str):
     """Handle SPA routing - serve app for known paths, redirect unknown paths"""
     # Known SPA paths - serve the app and let frontend handle routing
-    spa_paths = ["this-is", "re-discover", "playlists", "terms"]
+    spa_paths = ["this-is", "re-discover", "playlists", "terms", "artist-spotlight", "genre-mix"]
     
     if path in spa_paths:
         # Apply same system check logic as root

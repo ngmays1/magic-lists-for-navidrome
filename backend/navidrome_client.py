@@ -1135,6 +1135,129 @@ class NavidromeClient:
                 'total_tracks': 0
             }
     
+    async def get_artist_song_count(self, artist_id: str) -> int:
+        """Get total song count for an artist by summing album songCounts from getArtist.view"""
+        try:
+            params = self._get_subsonic_params()
+            params["id"] = artist_id
+
+            response = await self.client.get(
+                f"{self.base_url}/rest/getArtist.view",
+                params=params
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            subsonic_response = data.get("subsonic-response", {})
+            if subsonic_response.get("status") != "ok":
+                return 0
+
+            artist_data = subsonic_response.get("artist", {})
+            return sum(album.get("songCount", 0) for album in artist_data.get("album", []))
+
+        except Exception:
+            return 0
+
+    async def get_artists_with_song_counts(self, library_ids: Union[List[str], str, None] = None) -> List[Dict[str, Any]]:
+        """Fetch all artists with accurate song counts, filtered to those with 100+ songs.
+
+        Calls getArtists.view to list all artists, then batches getArtist.view calls
+        to sum per-album songCounts. Only returns artists with >= 100 songs.
+
+        Returns:
+            List of artists: {id, name, song_count, album_count}
+        """
+        await self._ensure_authenticated()
+
+        # Normalise library_ids
+        if isinstance(library_ids, str):
+            library_ids_list = [library_ids]
+        elif isinstance(library_ids, list):
+            library_ids_list = library_ids
+        else:
+            library_ids_list = []
+
+        if not library_ids_list:
+            env_library_id = os.getenv("NAVIDROME_LIBRARY_ID")
+            if env_library_id:
+                library_ids_list = [env_library_id]
+            else:
+                library_ids_list = None
+
+        # Collect all artists across requested libraries
+        raw_artists = []
+        if library_ids_list:
+            for lib_id in library_ids_list:
+                raw_artists.extend(await self._get_artists_with_album_count(lib_id))
+        else:
+            raw_artists.extend(await self._get_artists_with_album_count(None))
+
+        # Deduplicate
+        seen: set = set()
+        unique_artists = []
+        for a in raw_artists:
+            if a["id"] not in seen:
+                seen.add(a["id"])
+                unique_artists.append(a)
+
+        # Pre-filter: only artists with at least 7 albums are likely to have 100+ songs.
+        # We still verify with exact counts afterward.
+        candidates = [a for a in unique_artists if a["album_count"] >= 7]
+        print(f"🎵 Artist Spotlight: {len(unique_artists)} total artists, {len(candidates)} candidates (7+ albums)")
+
+        # Fetch song counts in parallel batches of 20
+        BATCH = 20
+        results = []
+        for i in range(0, len(candidates), BATCH):
+            batch = candidates[i:i + BATCH]
+            import asyncio
+            counts = await asyncio.gather(*[self.get_artist_song_count(a["id"]) for a in batch])
+            for artist, count in zip(batch, counts):
+                if count >= 100:
+                    results.append({
+                        "id": artist["id"],
+                        "name": artist["name"],
+                        "song_count": count,
+                        "album_count": artist["album_count"],
+                    })
+
+        results.sort(key=lambda x: x["name"].lower())
+        print(f"✅ Artist Spotlight: {len(results)} artists with 100+ songs")
+        return results
+
+    async def _get_artists_with_album_count(self, library_id: Union[str, None]) -> List[Dict[str, Any]]:
+        """Internal: fetch artists list including albumCount from getArtists.view"""
+        try:
+            params = self._get_subsonic_params()
+            if library_id:
+                params["musicFolderId"] = library_id
+
+            response = await self.client.get(
+                f"{self.base_url}/rest/getArtists.view",
+                params=params
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            subsonic_response = data.get("subsonic-response", {})
+            if subsonic_response.get("status") != "ok":
+                return []
+
+            artists_data = subsonic_response.get("artists", {})
+            artists_list = []
+            for index_group in artists_data.get("index", []):
+                for artist in index_group.get("artist", []):
+                    artists_list.append({
+                        "id": artist.get("id"),
+                        "name": artist.get("name"),
+                        "album_count": artist.get("albumCount", 0),
+                    })
+            return artists_list
+
+        except Exception as e:
+            print(f"⚠️ Error fetching artists with album count: {e}")
+            return []
+
     async def close(self):
         """Close the HTTP client"""
         await self.client.aclose()

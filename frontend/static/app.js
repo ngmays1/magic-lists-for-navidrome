@@ -187,7 +187,7 @@ function setActiveMenuItem(page) {
 // Navigation functionality
 function showContent(contentId) {
     // Hide all content sections
-    const contentSections = ['welcome-content', 'this-is-content', 'rediscover-content', 'genre-mix-content', 'manage-playlists-content', 'system-check-content', 'terms-content'];
+    const contentSections = ['welcome-content', 'this-is-content', 'rediscover-content', 'genre-mix-content', 'artist-spotlight-content', 'manage-playlists-content', 'system-check-content', 'terms-content'];
     contentSections.forEach(id => {
         const element = document.getElementById(id);
         if (element) {
@@ -1374,6 +1374,9 @@ function updateURL(page) {
         case 'genre-mix':
             url = '/genre-mix';
             break;
+        case 'artist-spotlight':
+            url = '/artist-spotlight';
+            break;
         case 'playlists':
             url = '/playlists';
             break;
@@ -1436,6 +1439,9 @@ function getPageFromURL(pathname) {
         case '/genre-mix':
             page = 'genre-mix';
             break;
+        case '/artist-spotlight':
+            page = 'artist-spotlight';
+            break;
         case '/playlists':
             page = 'playlists';
             break;
@@ -1477,6 +1483,9 @@ function handlePageNavigation(page) {
         if (selectedLibraryIds.length > 0) {
             setTimeout(() => loadGenres(), 100);
         }
+    } else if (page === 'artist-spotlight') {
+        contentId = 'artist-spotlight-content';
+        setTimeout(() => loadArtistSpotlight(), 100);
     } else if (page === 'playlists') {
         contentId = 'manage-playlists-content';
         // Load playlists when navigating to manage page
@@ -1491,6 +1500,108 @@ function handlePageNavigation(page) {
 
     setActiveMenuItem(page);
     showContent(contentId);
+}
+
+// ─── Artist Spotlight ──────────────────────────────────────────────────────────
+
+async function loadArtistSpotlight() {
+    const loadingEl = document.getElementById('spotlight-loading');
+    const emptyEl   = document.getElementById('spotlight-empty');
+    const container = document.getElementById('spotlight-container');
+
+    loadingEl.classList.remove('hidden');
+    emptyEl.classList.add('hidden');
+    container.innerHTML = '';
+
+    try {
+        let url = '/api/artist-spotlight';
+        if (selectedLibraryIds.length > 0) {
+            const params = selectedLibraryIds.map(id => `library_id=${encodeURIComponent(id)}`).join('&');
+            url = `/api/artist-spotlight?${params}`;
+        }
+
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to load artist spotlight');
+        const artists = await response.json();
+
+        loadingEl.classList.add('hidden');
+
+        if (artists.length === 0) {
+            emptyEl.classList.remove('hidden');
+            return;
+        }
+
+        renderArtistSpotlight(artists);
+
+    } catch (error) {
+        loadingEl.classList.add('hidden');
+        container.innerHTML = `
+            <div class="text-center p-8 text-red-600">
+                <p class="text-lg mb-2">Error loading artists</p>
+                <p class="text-sm">${error.message}</p>
+            </div>
+        `;
+    }
+}
+
+function renderArtistSpotlight(artists) {
+    const container = document.getElementById('spotlight-container');
+    container.innerHTML = artists.map(artist => `
+        <div class="flex items-center justify-between p-4 border border-gray-200 rounded-lg">
+            <div class="flex-grow min-w-0 mr-4">
+                <p class="font-semibold text-gray-900 truncate">${artist.name}</p>
+                <p class="text-sm text-gray-500">${artist.song_count} songs · ${artist.album_count} albums</p>
+            </div>
+            <div class="flex-none">
+                <button
+                    id="shuffle-btn-${artist.id}"
+                    onclick="createArtistShufflePlaylist('${artist.id}', ${JSON.stringify(artist.name)})"
+                    class="text-sm font-medium bg-gray-900 text-white py-1.5 px-3 rounded-lg hover:bg-gray-700 transition-colors whitespace-nowrap"
+                >
+                    Weekly Shuffle
+                </button>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function createArtistShufflePlaylist(artistId, artistName) {
+    const btn = document.getElementById(`shuffle-btn-${artistId}`);
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Creating…';
+    }
+
+    showToast('loading', `Creating weekly shuffle for ${artistName}…`, 0);
+
+    try {
+        const response = await fetch('/api/create-artist-shuffle-playlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist_ids: [artistId],
+                refresh_frequency: 'weekly',
+                playlist_length: 25,
+                library_ids: selectedLibraryIds
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
+            throw new Error(err.detail || 'Failed to create playlist');
+        }
+
+        showToast('success', `Weekly shuffle created for ${artistName} — refreshes every Monday!`);
+        updatePlaylistCount();
+
+    } catch (error) {
+        showToast('error', error.message);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Weekly Shuffle';
+        }
+    }
 }
 
 
