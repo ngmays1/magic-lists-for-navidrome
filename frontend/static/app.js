@@ -1587,7 +1587,7 @@ async function createArtistShufflePlaylist(artistId, artistName) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 artist_ids: [artistId],
-                playlist_name: `Artist Shuffle: ${artistName}`,
+                playlist_name: `AM: ${artistName}`,
                 refresh_frequency: 'weekly',
                 playlist_length: 25,
                 library_ids: selectedLibraryIds

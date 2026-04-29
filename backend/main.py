@@ -1403,7 +1403,7 @@ async def create_artist_shuffle_playlist(
             artist = next((a for a in all_artists if a["id"] == artist_id), None)
             if not artist:
                 raise HTTPException(status_code=404, detail="Artist not found")
-            playlist_name = f"Artist Shuffle: {artist['name']}"
+            playlist_name = f"AM: {artist['name']}"
 
         tracks = await nav_client.get_tracks_by_artist(artist_id, request.library_ids)
         if not tracks:
